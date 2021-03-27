@@ -229,6 +229,8 @@ pub struct Logger {
     cache: Arc<ArcSwap<CacheNode>>,
 
     target_override: Option<String>,
+
+    header: Option<String>,
 }
 
 impl Logger {
@@ -244,6 +246,7 @@ impl Logger {
             caching,
             cache: Default::default(),
             target_override: None,
+            header: None,
         })
     }
 
@@ -319,6 +322,12 @@ impl Logger {
         self
     }
 
+    /// add an extra argument record target
+    pub fn add_header(mut self, header: String) -> Self {
+        self.header = Some(header);
+        self
+    }
+
     /// Finds a node in the cache.
     ///
     /// The hierarchy separator is `::`.
@@ -349,7 +358,11 @@ impl Logger {
         record: &Record,
         cache: &Option<Arc<CacheNode>>,
     ) -> PyResult<Option<PyObject>> {
-        let msg = format!("{}", record.args());
+        let msg = match &self.header {
+            Some(header) => format!("({}) {}", header, record.args()),
+            None => format!("{}", record.args()),
+        };
+
         let log_level = map_level(record.level());
 
         let target: Cow<str> = match &self.target_override {
