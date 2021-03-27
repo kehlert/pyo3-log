@@ -104,6 +104,7 @@
 //! Log levels are mapped to the same-named ones. The [`Trace`][Level::Trace] doesn't exist on the
 //! Python side, but is mapped to a level with value 0.
 
+use std::borrow::Cow;
 use std::cmp;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -226,6 +227,8 @@ pub struct Logger {
     /// here is switched. In case of collisions (eg. someone already replaced the root since
     /// starting the update), the update is just thrown away.
     cache: Arc<ArcSwap<CacheNode>>,
+
+    target_override: Option<String>,
 }
 
 impl Logger {
@@ -240,6 +243,7 @@ impl Logger {
             logging: logging.into(),
             caching,
             cache: Default::default(),
+            target_override: None,
         })
     }
 
@@ -309,6 +313,12 @@ impl Logger {
         self
     }
 
+    /// Override record target
+    pub fn target_override(mut self, target: String) -> Self {
+        self.target_override = Some(target);
+        self
+    }
+
     /// Finds a node in the cache.
     ///
     /// The hierarchy separator is `::`.
@@ -341,15 +351,23 @@ impl Logger {
     ) -> PyResult<Option<PyObject>> {
         let msg = format!("{}", record.args());
         let log_level = map_level(record.level());
-        let target = record.target().replace("::", ".");
+
+        let target: Cow<str> = match &self.target_override {
+            Some(target_override) => target_override.into(),
+            None => record.target().replace("::", ".").into(),
+        };
+
         let cached_logger = cache
             .as_ref()
             .and_then(|node| node.local.as_ref())
             .map(|local| &local.logger);
+
         let (logger, cached) = match cached_logger {
             Some(cached) => (cached.as_ref(py), true),
             None => (
-                self.logging.as_ref(py).call1("getLogger", (&target,))?,
+                self.logging
+                    .as_ref(py)
+                    .call1("getLogger", (target.as_ref(),))?,
                 false,
             ),
         };
@@ -361,7 +379,7 @@ impl Logger {
             let record = logger.call_method1(
                 "makeRecord",
                 (
-                    target,
+                    target.as_ref(),
                     log_level,
                     record.file(),
                     record.line().unwrap_or_default(),
