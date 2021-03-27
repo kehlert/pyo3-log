@@ -107,7 +107,7 @@
 use std::borrow::Cow;
 use std::cmp;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use log::{Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
@@ -121,8 +121,8 @@ use pyo3::prelude::*;
 #[derive(Clone, Debug)]
 pub struct ResetHandle {
     cache: Arc<ArcSwap<CacheNode>>,
-    target_override: Arc<Mutex<Option<String>>>,
-    header: Arc<Mutex<Option<String>>>,
+    target_override: Arc<ArcSwap<Option<String>>>,
+    header: Arc<ArcSwap<Option<String>>>,
 }
 
 impl ResetHandle {
@@ -136,12 +136,14 @@ impl ResetHandle {
         self.cache.store(Default::default());
     }
 
+    /// change target
     pub fn target_override(&mut self, target: String) {
-        self.target_override.lock().unwrap().replace(target);
+        self.target_override.store(Arc::new(Some(target)));
     }
 
+    /// change header
     pub fn add_header(&mut self, header: String) {
-        self.header.lock().unwrap().replace(header);
+        self.header.store(Arc::new(Some(header)));
     }
 }
 
@@ -240,9 +242,9 @@ pub struct Logger {
     /// starting the update), the update is just thrown away.
     cache: Arc<ArcSwap<CacheNode>>,
 
-    target_override: Arc<Mutex<Option<String>>>,
+    target_override: Arc<ArcSwap<Option<String>>>,
 
-    header: Arc<Mutex<Option<String>>>,
+    header: Arc<ArcSwap<Option<String>>>,
 }
 
 impl Logger {
@@ -257,8 +259,8 @@ impl Logger {
             logging: logging.into(),
             caching,
             cache: Default::default(),
-            target_override: Arc::new(Mutex::new(None)),
-            header: Arc::new(Mutex::new(None)),
+            target_override: Default::default(),
+            header: Default::default(),
         })
     }
 
@@ -332,18 +334,6 @@ impl Logger {
         self
     }
 
-    /// Override record target
-    pub fn target_override(mut self, target: String) -> Self {
-        self.target_override.lock().unwrap().replace(target);
-        self
-    }
-
-    /// add an extra argument record target
-    pub fn add_header(mut self, header: String) -> Self {
-        self.header.lock().unwrap().replace(header);
-        self
-    }
-
     /// Finds a node in the cache.
     ///
     /// The hierarchy separator is `::`.
@@ -374,14 +364,14 @@ impl Logger {
         record: &Record,
         cache: &Option<Arc<CacheNode>>,
     ) -> PyResult<Option<PyObject>> {
-        let msg = match self.header.lock().unwrap().as_ref() {
+        let msg = match self.header.load().as_ref() {
             Some(header) => format!("({}) {}", header, record.args()),
             None => format!("{}", record.args()),
         };
 
         let log_level = map_level(record.level());
 
-        let target_lock = self.target_override.lock().unwrap();
+        let target_lock = self.target_override.load();
 
         let target: Cow<str> = match target_lock.as_ref() {
             Some(target_override) => target_override.into(),
