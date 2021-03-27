@@ -107,7 +107,7 @@
 use std::borrow::Cow;
 use std::cmp;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use log::{Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
@@ -119,7 +119,11 @@ use pyo3::prelude::*;
 /// purpose is to reset the internal caches, for example if the logging settings on the Python side
 /// changed.
 #[derive(Clone, Debug)]
-pub struct ResetHandle(Arc<ArcSwap<CacheNode>>);
+pub struct ResetHandle {
+    cache: Arc<ArcSwap<CacheNode>>,
+    target_override: Arc<Mutex<Option<String>>>,
+    header: Arc<Mutex<Option<String>>>,
+}
 
 impl ResetHandle {
     /// Reset the internal logger caches.
@@ -129,7 +133,15 @@ impl ResetHandle {
     pub fn reset(&self) {
         // Overwrite whatever is in the cache directly. This must win in case of any collisions
         // (the caching uses compare_and_swap to let the reset win).
-        self.0.store(Default::default());
+        self.cache.store(Default::default());
+    }
+
+    pub fn target_override(&mut self, target: String) {
+        self.target_override.lock().unwrap().replace(target);
+    }
+
+    pub fn add_header(&mut self, header: String) {
+        self.header.lock().unwrap().replace(header);
     }
 }
 
@@ -228,9 +240,9 @@ pub struct Logger {
     /// starting the update), the update is just thrown away.
     cache: Arc<ArcSwap<CacheNode>>,
 
-    target_override: Option<String>,
+    target_override: Arc<Mutex<Option<String>>>,
 
-    header: Option<String>,
+    header: Arc<Mutex<Option<String>>>,
 }
 
 impl Logger {
@@ -245,8 +257,8 @@ impl Logger {
             logging: logging.into(),
             caching,
             cache: Default::default(),
-            target_override: None,
-            header: None,
+            target_override: Arc::new(Mutex::new(None)),
+            header: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -275,7 +287,11 @@ impl Logger {
     /// for example, the logger will be passed to some other logging system that connects multiple
     /// loggers together.
     pub fn reset_handle(&self) -> ResetHandle {
-        ResetHandle(Arc::clone(&self.cache))
+        ResetHandle {
+            cache: Arc::clone(&self.cache),
+            target_override: Arc::clone(&self.target_override),
+            header: Arc::clone(&self.header),
+        }
     }
 
     /// Configures the default logging filter.
@@ -318,13 +334,13 @@ impl Logger {
 
     /// Override record target
     pub fn target_override(mut self, target: String) -> Self {
-        self.target_override = Some(target);
+        self.target_override.lock().unwrap().replace(target);
         self
     }
 
     /// add an extra argument record target
     pub fn add_header(mut self, header: String) -> Self {
-        self.header = Some(header);
+        self.header.lock().unwrap().replace(header);
         self
     }
 
@@ -358,14 +374,16 @@ impl Logger {
         record: &Record,
         cache: &Option<Arc<CacheNode>>,
     ) -> PyResult<Option<PyObject>> {
-        let msg = match &self.header {
+        let msg = match self.header.lock().unwrap().as_ref() {
             Some(header) => format!("({}) {}", header, record.args()),
             None => format!("{}", record.args()),
         };
 
         let log_level = map_level(record.level());
 
-        let target: Cow<str> = match &self.target_override {
+        let target_lock = self.target_override.lock().unwrap();
+
+        let target: Cow<str> = match target_lock.as_ref() {
             Some(target_override) => target_override.into(),
             None => record.target().replace("::", ".").into(),
         };
